@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: payloot
+      POSTGRES_PASSWORD: payloot_strong_password
+      POSTGRES_DB: payloot_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payloot -d payloot_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://payloot:payloot_strong_password@db:5432/payloot_db
+      JWT_SECRET: change_this_to_64_char_random_hex_on_vps
+    ports:
+      - "8000:8000"
+
+volumes:
+  pgdata:

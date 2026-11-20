@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PayLoot — Биржа игровых ценностей и аккаунтов</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen antialiased">
+  <header class="sticky top-0 z-30 bg-white border-b border-slate-200 h-16">
+    <div class="max-w-7xl mx-auto px-4 h-full flex items-center justify-between gap-4">
+      <button onclick="renderCatalog()" class="flex items-center gap-2 font-bold text-lg text-slate-900">
+        <span class="w-8 h-8 rounded-lg bg-blue-900 text-white flex items-center justify-center text-sm">PL</span>
+        <span>PayLoot</span>
+      </button>
+      <div id="authArea" class="flex items-center gap-3 text-sm"></div>
+    </div>
+  </header>
+
+  <main id="appRoot" class="max-w-7xl mx-auto px-4 py-6"></main>
+
+  <script>
+    const state = {
+      token: localStorage.getItem("pl_jwt") || "",
+      user: null,
+      games: [],
+      lots: [],
+      selectedGame: "",
+      selectedCategory: "",
+      ws: null,
+    };
+
+    function authHeaders() {
+      const h = { "Content-Type": "application/json" };
+      if (state.token) h["Authorization"] = "Bearer " + state.token;
+      return h;
+    }
+
+    async function init() {
+      if (state.token) {
+        const res = await fetch("/api/auth/me", { headers: authHeaders() });
+        if (res.ok) {
+          state.user = await res.json();
+          connectWs();
+        } else {
+          state.token = "";
+          localStorage.removeItem("pl_jwt");
+        }
+      }
+      renderHeader();
+      await renderCatalog();
+    }
+
+    function connectWs() {
+      if (!state.token || state.ws) return;
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      state.ws = new WebSocket(`${proto}//${location.host}/ws/chat?token=${encodeURIComponent(state.token)}`);
+      state.ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        const box = document.getElementById("chatMessages");
+        if (box && msg.text) {
+          const div = document.createElement("div");
+          div.className = "p-2.5 rounded-lg bg-slate-100 text-sm";
+          div.textContent = `${msg.sender_username || "Система"}: ${msg.text}`;
+          box.appendChild(div);
+          box.scrollTop = box.scrollHeight;
+        }
+      };
+      state.ws.onclose = () => { state.ws = null; };
+    }
+
+    function renderHeader() {
+      const el = document.getElementById("authArea");
+      if (!state.user) {
+        el.innerHTML = `
+          <button onclick="renderAuth('login')" class="px-3.5 py-2 rounded-lg border border-slate-300 hover:bg-slate-50 font-medium">Войти</button>
+          <button onclick="renderAuth('register')" class="px-3.5 py-2 rounded-lg bg-blue-900 text-white hover:bg-blue-800 font-medium">Регистрация</button>
+        `;
+      } else {
+        el.innerHTML = `
+          <button onclick="topUp()" class="px-3 py-1.5 rounded-lg bg-slate-100 font-mono font-semibold text-slate-900">
+            ${Number(state.user.balance).toLocaleString("ru-RU")} ₽ +
+          </button>
+          <button onclick="renderProfile('${state.user.username}')" class="font-semibold text-blue-900 hover:underline">
+            ${state.user.username}
+          </button>
+          <button onclick="logout()" class="text-slate-500 hover:text-slate-800">Выйти</button>
+        `;
+      }
+    }
+
+    async function renderCatalog() {
+      const [gRes, lRes] = await Promise.all([
+        fetch("/api/games"),
+        fetch(`/api/lots?game_slug=${state.selectedGame}&category=${encodeURIComponent(state.selectedCategory)}`),
+      ]);
+      state.games = await gRes.json();
+      state.lots = await lRes.json();
+
+      const root = document.getElementById("appRoot");
+      root.innerHTML = `
+        <div class="flex flex-wrap gap-2 mb-4">
+          <button onclick="selectGame('')" class="px-3 py-1.5 rounded-lg text-sm font-medium border ${!state.selectedGame ? 'bg-blue-900 text-white border-blue-900' : 'bg-white border-slate-200'}">Все игры</button>
+          ${state.games.map(g => `
+            <button onclick="selectGame('${g.slug}')" class="px-3 py-1.5 rounded-lg text-sm font-medium border ${state.selectedGame === g.slug ? 'bg-blue-900 text-white border-blue-900' : 'bg-white border-slate-200'}">${g.name}</button>
+          `).join("")}
+        </div>
+        <div class="bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <table class="w-full text-left border-collapse">
+            <thead class="bg-slate-50 border-b border-slate-200 text-xs uppercase text-slate-500">
+              <tr>
+                <th class="py-3 px-4">Категория / Игра</th>
+                <th class="py-3 px-4">Описание предложения</th>
+                <th class="py-3 px-4">Продавец</th>
+                <th class="py-3 px-4 text-right">Наличие</th>
+                <th class="py-3 px-4 text-right">Цена</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-200 text-sm">
+              ${state.lots.map(lot => `
+                <tr class="hover:bg-slate-50 transition">
+                  <td class="py-3.5 px-4 text-slate-600">${lot.game_name}<div class="text-xs text-slate-400">${lot.category}</div></td>
+                  <td class="py-3.5 px-4 font-medium text-slate-900">
+                    ${lot.has_auto_delivery ? '<span class="inline-block mr-1 px-1.5 py-0.5 text-xs bg-blue-50 text-blue-900 rounded font-semibold">⚡ Автовыдача</span>' : ''}
+                    ${lot.title}
+                  </td>
+                  <td class="py-3.5 px-4">
+                    <button onclick="renderProfile('${lot.seller.username}')" class="flex items-center gap-2 hover:underline font-medium">
+                      <span class="w-2.5 h-2.5 rounded-full ${lot.seller.is_online ? 'bg-emerald-500' : 'bg-slate-300'}"></span>
+                      ${lot.seller.username}
+                      <span class="text-amber-500 text-xs">★ ${Number(lot.seller.rating).toFixed(1)} (${lot.seller.reviews_count})</span>
+                    </button>
+                  </td>
+                  <td class="py-3.5 px-4 text-right font-mono text-slate-600">${lot.stock_count} шт.</td>
+                  <td class="py-3.5 px-4 text-right">
+                    <button onclick="buyLot(${lot.id})" class="px-3 py-1.5 rounded-lg bg-blue-900 text-white font-mono font-semibold hover:bg-blue-800">
+                      ${Number(lot.price).toLocaleString("ru-RU")} ₽
+                    </button>
+                  </td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    window.selectGame = (slug) => { state.selectedGame = slug; renderCatalog(); };
+
+    window.buyLot = async (lotId) => {
+      if (!state.user) return renderAuth("login");
+      const res = await fetch("/api/orders", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ lot_id: lotId }),
+      });
+      const data = await res.json();
+      if (!res.ok) return alert(data.detail || "Ошибка покупки");
+      state.user.balance = data.new_balance;
+      renderHeader();
+      alert(`Заказ #${data.order_id} оплачен через Безопасную сделку!` + (data.delivered_data ? `\nАвтовыдача:\n${data.delivered_data}` : ""));
+      renderCatalog();
+    };
+
+    window.renderProfile = async (username) => {
+      const res = await fetch(`/api/users/${encodeURIComponent(username)}`);
+      if (!res.ok) return alert("Профиль не найден");
+      const p = await res.json();
+      document.getElementById("appRoot").innerHTML = `
+        <div class="bg-white border border-slate-200 rounded-xl p-6 mb-6 flex items-center justify-between">
+          <div>
+            <div class="flex items-center gap-2.5">
+              <h1 class="text-2xl font-bold">${p.username}</h1>
+              <span class="px-2.5 py-0.5 rounded-full text-xs font-medium ${p.is_online ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}">
+                ${p.is_online ? '● Онлайн' : 'Оффлайн'}
+              </span>
+            </div>
+            <p class="text-sm text-slate-500 mt-1">На бирже с ${new Date(p.created_at).toLocaleDateString("ru-RU")}</p>
+          </div>
+          <div class="text-right">
+            <div class="text-xl font-bold text-amber-500">★ ${Number(p.rating).toFixed(2)}</div>
+            <div class="text-xs text-slate-500">${p.reviews_count} отзывов</div>
+          </div>
+        </div>
+        <h2 class="font-bold text-lg mb-3">Активные лоты (${p.active_lots.length})</h2>
+        <div class="bg-white border border-slate-200 rounded-xl divide-y divide-slate-200 mb-6">
+          ${p.active_lots.map(l => `
+            <div class="p-4 flex justify-between items-center">
+              <div>
+                <div class="text-xs text-slate-400">${l.game_name} • ${l.category}</div>
+                <div class="font-medium">${l.title}</div>
+              </div>
+              <button onclick="buyLot(${l.id})" class="px-3 py-1.5 rounded-lg bg-blue-900 text-white font-mono text-sm">${Number(l.price).toLocaleString("ru-RU")} ₽</button>
+            </div>
+          `).join("") || '<div class="p-4 text-sm text-slate-500">Нет активных лотов</div>'}
+        </div>
+        <h2 class="font-bold text-lg mb-3">Отзывы покупателей (${p.reviews.length})</h2>
+        <div class="bg-white border border-slate-200 rounded-xl divide-y divide-slate-200">
+          ${p.reviews.map(r => `
+            <div class="p-4">
+              <div class="flex justify-between text-sm mb-1">
+                <span class="font-semibold">${r.author_username}</span>
+                <span class="text-amber-500">${"★".repeat(r.rating)}</span>
+              </div>
+              <p class="text-sm text-slate-700">${r.text}</p>
+            </div>
+          `).join("") || '<div class="p-4 text-sm text-slate-500">Отзывов пока нет</div>'}
+        </div>
+      `;
+    };
+
+    window.renderAuth = (mode) => {
+      document.getElementById("appRoot").innerHTML = `
+        <form onsubmit="submitAuth(event, '${mode}')" class="max-w-md mx-auto bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+          <h1 class="text-xl font-bold">${mode === 'login' ? 'Вход в аккаунт' : 'Регистрация'}</h1>
+          ${mode === 'register' ? '<input name="username" required placeholder="Имя пользователя (латиница)" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />' : ''}
+          <input name="login" required placeholder="${mode === 'login' ? 'Логин или Email (например, alex_trader)' : 'Email'}" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+          <input name="password" type="password" required placeholder="Пароль (демо: demo12345)" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />
+          <button class="w-full py-2.5 rounded-lg bg-blue-900 text-white font-semibold text-sm">${mode === 'login' ? 'Войти' : 'Создать аккаунт'}</button>
+        </form>
+      `;
+    };
+
+    window.submitAuth = async (e, mode) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const body = mode === "login"
+        ? { login: fd.get("login"), password: fd.get("password") }
+        : { username: fd.get("username"), email: fd.get("login"), password: fd.get("password") };
+      const res = await fetch(`/api/auth/${mode}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) return alert(data.detail || "Ошибка авторизации");
+      state.token = data.access_token;
+      state.user = data.user;
+      localStorage.setItem("pl_jwt", state.token);
+      connectWs();
+      renderHeader();
+      renderCatalog();
+    };
+
+    window.topUp = async () => {
+      const res = await fetch("/api/wallet/topup?amount=1000", { method: "POST", headers: authHeaders() });
+      if (res.ok) {
+        const d = await res.json();
+        state.user.balance = d.balance;
+        renderHeader();
+      }
+    };
+
+    window.logout = async () => {
+      await fetch("/api/auth/logout", { method: "POST", headers: authHeaders() });
+      state.token = "";
+      state.user = null;
+      localStorage.removeItem("pl_jwt");
+      if (state.ws) state.ws.close();
+      renderHeader();
+      renderCatalog();
+    };
+
+    init();
+  </script>
+</body>
+</html>
